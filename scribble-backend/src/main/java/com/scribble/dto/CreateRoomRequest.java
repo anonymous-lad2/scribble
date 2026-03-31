@@ -6,7 +6,7 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 @Data
-public class CreateGameRequest {
+public class CreateRoomRequest {
 
     @NotBlank
     private String username;
