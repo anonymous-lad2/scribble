@@ -1,5 +1,7 @@
 package com.scribble.domain.game;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.scribble.domain.player.Player;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -20,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class GameRoom implements Serializable {
 
     // ── Identity ──────────────────────────────────────────────
@@ -88,6 +91,7 @@ public class GameRoom implements Serializable {
         return players.size();
     }
 
+    @JsonIgnore
     public boolean isFull() {
         return players.size() >= maxPlayers;
     }
@@ -100,6 +104,7 @@ public class GameRoom implements Serializable {
     }
 
     // True when everyone except the drawer has guessed correctly
+    @JsonIgnore
     public boolean allPlayersGuessed() {
         long eligibleCount = players.values().stream()
                 .filter(p -> !p.getPlayerId().equals(currentDrawerId))
