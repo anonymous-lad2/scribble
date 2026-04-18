@@ -36,7 +36,7 @@ public class GameService {
 
     // ── Start game ────────────────────────────────────────────
 
-    private void startGame(String roomId, String requestingPlayerId) {
+    public void startGame(String roomId, String requestingPlayerId) {
         GameRoom room = roomRepository.findById(roomId);
         validateRoom(room, roomId);
 
