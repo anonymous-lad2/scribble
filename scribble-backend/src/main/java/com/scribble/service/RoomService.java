@@ -131,6 +131,18 @@ public class RoomService {
         log.info("Player {} left room {}", leaving.getUsername(), roomId);
     }
 
+    public void updatePlayerSession(String roomId, String playerId, String sessionId) {
+        GameRoom room = roomRepository.findById(roomId);
+        if (room == null) return;
+
+        Player player = room.getPlayer(playerId);
+        if (player != null) {
+            player.setSessionId(sessionId);
+            player.setConnected(true);
+            roomRepository.save(room);
+        }
+    }
+
     // ── Disconnect (WebSocket dropped) ────────────────────────
     // Different from leaveRoom — marks player as disconnected
     // rather than removing them, giving them a chance to reconnect
