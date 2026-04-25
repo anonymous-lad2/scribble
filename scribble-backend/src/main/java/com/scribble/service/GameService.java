@@ -5,9 +5,9 @@ import com.scribble.domain.game.GameState;
 import com.scribble.domain.player.Player;
 import com.scribble.dto.GameEvent;
 import com.scribble.repository.GameRoomRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -17,7 +17,6 @@ import java.util.concurrent.*;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class GameService {
 
     private final GameRoomRepository roomRepository;
@@ -25,11 +24,26 @@ public class GameService {
     private final ScoreService scoreService;
     private SimpMessagingTemplate messagingTemplate;
 
+    @Autowired
+    public GameService(
+            GameRoomRepository roomRepository,
+            WordService wordService,
+            ScoreService scoreService,
+            @Lazy SimpMessagingTemplate messagingTemplate) {
+        this.roomRepository = roomRepository;
+        this.wordService = wordService;
+        this.scoreService = scoreService;
+        this.messagingTemplate = messagingTemplate;
+    }
+
     // one scheduler for all rooms - handles turn timers + hint tasks
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
 
     // Active turn timers keyed by roomId - started so we can cancel early
     private final Map<String, ScheduledFuture<?>> turnTimers = new ConcurrentHashMap<>();
+
+    // Optional per-turn tick task (must be cancelled with the main turn timer)
+    private final Map<String, ScheduledFuture<?>> turnTickTasks = new ConcurrentHashMap<>();
 
     // Active hint tasks keyed by roomd
     private final Map<String, List<ScheduledFuture<?>>> hintTasks = new ConcurrentHashMap<>();
@@ -41,17 +55,17 @@ public class GameService {
         validateRoom(room, roomId);
 
         if(!room.getHostId().equals(requestingPlayerId)) {
-            sendError(requestingPlayerId, "Only the host can start the game");
+            sendError(roomId, requestingPlayerId, "Only the host can start the game");
             return;
         }
 
         if(room.getPlayerCount() < 2) {
-            sendError(requestingPlayerId, "Need at least 2 players to start");
+            sendError(roomId, requestingPlayerId, "Need at least 2 players to start");
             return;
         }
 
         if(room.getState() != GameState.LOBBY) {
-            sendError(requestingPlayerId, "Game already started");
+            sendError(roomId, requestingPlayerId, "Game already started");
             return;
         }
 
@@ -117,7 +131,7 @@ public class GameService {
         validateRoom(room, roomId);
 
         if(!playerId.equals(room.getCurrentDrawerId())) {
-            sendError(playerId, "You are not the drawer");
+            sendError(roomId, playerId, "You are not the drawer");
             return;
         }
 
@@ -254,11 +268,10 @@ public class GameService {
         String roomId = room.getRoomId();
         int duration = room.getTurnDurationSeconds();
 
-        // Broadcast a tick every second so clients can show countdown
+        // Placeholder tick (reserved for future server-side countdown sync); must be cancelled with the turn
         ScheduledFuture<?> tickTask = scheduler.scheduleAtFixedRate(() -> {
-            // we track time client-side too, this is just a server sync
-            // In a production build you'd track remaining seconds in Redis
         }, 1, 1, TimeUnit.SECONDS);
+        turnTickTasks.put(roomId, tickTask);
 
         // The main timer that ends the turn
         ScheduledFuture<?> turnEndTask = scheduler.schedule(
@@ -313,6 +326,8 @@ public class GameService {
     private void cancelTurnTimer(String roomId) {
         ScheduledFuture<?> timer = turnTimers.remove(roomId);
         if(timer != null) timer.cancel(false);
+        ScheduledFuture<?> tick = turnTickTasks.remove(roomId);
+        if(tick != null) tick.cancel(false);
     }
 
     private void cancelHintTasks(String roomId) {
@@ -359,9 +374,16 @@ public class GameService {
         );
     }
 
-    private void sendError(String playerID, String message) {
+    private void sendError(String roomId, String playerId, String message) {
+        GameRoom room = roomRepository.findById(roomId);
+        if (room == null) return;
+        Player p = room.getPlayer(playerId);
+        if (p == null || p.getSessionId() == null || p.getSessionId().isBlank()) {
+            log.warn("Cannot deliver game error to player {} in room {} — no active WebSocket session", playerId, roomId);
+            return;
+        }
         messagingTemplate.convertAndSendToUser(
-                playerID, "/queue/errors",
+                p.getSessionId(), "/queue/errors",
                 GameEvent.builder()
                         .type(GameEvent.Type.ERROR)
                         .payload(Map.of("message", message))
