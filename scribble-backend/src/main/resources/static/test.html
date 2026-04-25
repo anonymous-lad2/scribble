@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Scribble WS Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        body { font-family: monospace; padding: 16px; background: #111; color: #eee; }
+        input, button { margin: 4px; padding: 6px 10px; border-radius: 4px; border: 1px solid #444; }
+        input { background: #222; color: #eee; width: 200px; }
+        button { background: #333; color: #eee; cursor: pointer; }
+        button:hover { background: #555; }
+        #log { height: 420px; overflow-y: auto; border: 1px solid #333;
+               padding: 10px; font-size: 12px; background: #0a0a0a; margin-top: 10px; }
+        .section { margin: 10px 0; padding: 10px; border: 1px solid #333; border-radius: 6px; }
+        label { color: #aaa; font-size: 12px; }
+        #status { font-weight: bold; }
+        .green { color: #5DCAA5; } .red { color: #FF6B6B; } .yellow { color: #F6D860; }
+        .purple { color: #AFA9EC; } .blue { color: #85B7EB; } .orange { color: #FF9B71; }
+    </style>
+</head>
+<body>
+
+<h2>🎨 Scribble WebSocket Tester</h2>
+
+<!-- STEP 1: Setup -->
+<div class="section">
+    <b>Step 1 — Get IDs from API</b><br><br>
+    <label>Username:</label>
+    <input id="username" value="Alice" style="width:120px"/>
+    <button onclick="createRoom()">🏠 Create Room (as host)</button>
+    &nbsp;&nbsp;
+    <label>Username:</label>
+    <input id="username2" value="Bob" style="width:120px"/>
+    <button onclick="joinRoom()">🚪 Join Room (as guest)</button>
+    <br><br>
+    <label>Room ID:</label>
+    <input id="roomId" placeholder="auto-filled" style="width:120px"/>
+    &nbsp;
+    <label>Your Player ID:</label>
+    <input id="playerId" placeholder="auto-filled" style="width:300px"/>
+    &nbsp;
+    <label>Name:</label>
+    <input id="playerName" value="Alice" style="width:100px"/>
+</div>
+
+<!-- STEP 2: Connect -->
+<div class="section">
+    <b>Step 2 — Connect WebSocket</b><br><br>
+    <button onclick="connect()">🔌 Connect</button>
+    <button onclick="disconnect()">⛔ Disconnect</button>
+    <span id="status" class="red">● Disconnected</span>
+</div>
+
+<!-- STEP 3: Game actions -->
+<div class="section">
+    <b>Step 3 — Game Actions</b><br><br>
+    <button onclick="startGame()">▶ Start Game</button>
+    <button onclick="chooseWord()">📝 Choose Word</button>
+    &nbsp;&nbsp;
+    <input id="guessInput" placeholder="Type guess..." style="width:180px"/>
+    <button onclick="sendGuess()">💬 Send Guess</button>
+    &nbsp;&nbsp;
+    <button onclick="sendDraw()">🖌 Send Draw Event</button>
+    <button onclick="clearCanvas()">🗑 Clear</button>
+</div>
+
+<!-- Log -->
+<div>
+    <b>Events Log:</b>
+    <button onclick="document.getElementById('log').innerHTML=''"
+            style="float:right;font-size:11px">Clear log</button>
+    <div id="log"></div>
+</div>
+
+<script>
+    const BASE = 'http://localhost:8000';
+    let stompClient = null;
+    let wordChoices = [];
+    let currentRoomId = null;
+    /** JWT from /api/auth/guest (or login); required for room API + STOMP CONNECT */
+    let authToken = null;
+
+    // ── Logging ───────────────────────────────────────────────
+
+    function log(msg, cls = '') {
+      const div = document.getElementById('log');
+      const time = new Date().toLocaleTimeString();
+      const text = typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg;
+      div.innerHTML += `<div class="${cls}">[${time}] ${text}</div>`;
+      div.scrollTop = div.scrollHeight;
+    }
+
+    // ── REST: Create Room ─────────────────────────────────────
+
+    async function createRoom() {
+      const username = document.getElementById('username').value.trim();
+      try {
+        // First register/guest to get a token (or skip if auth is open)
+        const authRes = await fetch(`${BASE}/api/auth/guest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username })
+        });
+        const auth = await authRes.json();
+        log('Auth: ' + JSON.stringify(auth), 'green');
+        authToken = auth.token;
+
+        // Create room
+        const roomRes = await fetch(`${BASE}/api/rooms/create`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + auth.token
+          },
+          body: JSON.stringify({ username, avatarColor: '#4F46E5', totalRounds: 2, turnDurationSeconds: 60 })
+        });
+        if (!roomRes.ok) {
+          const err = await roomRes.json().catch(() => ({}));
+          log('❌ Create room failed: ' + (err.error || roomRes.status), 'red');
+          return;
+        }
+        const room = await roomRes.json();
+        log('Room created: ' + JSON.stringify(room), 'green');
+
+        // Auto-fill fields
+        document.getElementById('roomId').value = room.roomId;
+        document.getElementById('playerId').value = room.yourPlayerId;
+        document.getElementById('playerName').value = username;
+        currentRoomId = room.roomId;
+
+        log(`✅ Room ${room.roomId} created. You are host (${room.yourPlayerId})`, 'green');
+      } catch (e) {
+        log('❌ Create room error: ' + e.message, 'red');
+      }
+    }
+
+    // ── REST: Join Room ───────────────────────────────────────
+
+    async function joinRoom() {
+      const roomId = document.getElementById('roomId').value.trim();
+      const username = document.getElementById('username2').value.trim();
+      if (!roomId) { log('❌ Create a room first!', 'red'); return; }
+
+      try {
+        const authRes = await fetch(`${BASE}/api/auth/guest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username })
+        });
+        const auth = await authRes.json();
+        authToken = auth.token;
+        log('Auth (join): ' + JSON.stringify(auth), 'green');
+
+        const res = await fetch(`${BASE}/api/rooms/join`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken
+          },
+          body: JSON.stringify({ roomId, username, avatarColor: '#10B981' })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          log('❌ Join failed: ' + (err.error || res.status), 'red');
+          return;
+        }
+        const room = await res.json();
+        log('Joined: ' + JSON.stringify(room), 'green');
+
+        // Put Bob's ID in a separate display
+        log(`✅ ${username} joined as playerId: ${room.yourPlayerId}`, 'green');
+        log(`📋 Copy Bob's playerId to Tab 2: ${room.yourPlayerId}`, 'yellow');
+      } catch (e) {
+        log('❌ Join error: ' + e.message, 'red');
+      }
+    }
+
+    // ── WebSocket: Connect ────────────────────────────────────
+
+    function connect() {
+      const roomId   = document.getElementById('roomId').value.trim();
+      const playerId = document.getElementById('playerId').value.trim();
+      const name     = document.getElementById('playerName').value.trim();
+
+      if (!roomId || !playerId) {
+        log('❌ Fill in Room ID and Player ID first (use Create Room)', 'red');
+        return;
+      }
+      if (!authToken) {
+        log('❌ Get a token first: use Create Room or Join Room (calls /api/auth/guest).', 'red');
+        return;
+      }
+
+      const socket = new SockJS(`${BASE}/ws`);
+      stompClient = Stomp.over(socket);
+      stompClient.debug = null;
+
+      stompClient.connect(
+        { playerId, roomId, Authorization: 'Bearer ' + authToken },
+        function () {
+          setStatus(true);
+          log(`✅ Connected as "${name}" (${playerId})`, 'green');
+
+          // Subscribe to all topics
+          stompClient.subscribe(`/topic/room/${roomId}/game`, m => {
+            const parsed = JSON.parse(m.body);
+            log('🎮 GAME → ' + JSON.stringify(parsed), 'purple');
+            // Auto-save word choices when they arrive
+            if (parsed.type === 'WORD_CHOICES') {
+              wordChoices = parsed.payload.choices;
+            }
+          });
+
+          stompClient.subscribe(`/topic/room/${roomId}/draw`, m => {
+            log('🖌 DRAW → ' + m.body, 'blue');
+          });
+
+          stompClient.subscribe(`/topic/room/${roomId}/chat`, m => {
+            log('💬 CHAT → ' + m.body, 'yellow');
+          });
+
+          stompClient.subscribe(`/topic/room/${roomId}/lobby`, m => {
+            log('🏠 LOBBY → ' + m.body, 'green');
+          });
+
+          // Private messages — only this player sees these
+          stompClient.subscribe('/user/queue/game', m => {
+            const parsed = JSON.parse(m.body);
+            log('🔒 PRIVATE GAME → ' + JSON.stringify(parsed), 'orange');
+            if (parsed.type === 'WORD_CHOICES') {
+              wordChoices = parsed.payload.choices;
+              log(`📝 Word choices: [${wordChoices.join(' | ')}]`, 'orange');
+            }
+          });
+
+          stompClient.subscribe('/user/queue/draw', m => {
+            log('🔒 CANVAS REPLAY → ' + m.body, 'orange');
+          });
+
+          stompClient.subscribe('/user/queue/errors', m => {
+            log('❌ ERROR → ' + m.body, 'red');
+          });
+        },
+        function (err) {
+          log('❌ WS Connection failed: ' + err, 'red');
+          setStatus(false);
+        }
+      );
+    }
+
+    function disconnect() {
+      if (stompClient) stompClient.disconnect();
+      setStatus(false);
+      log('Disconnected', 'red');
+    }
+
+    function setStatus(connected) {
+      const el = document.getElementById('status');
+      el.textContent = connected ? '● Connected' : '● Disconnected';
+      el.className = connected ? 'green' : 'red';
+    }
+
+    // ── Game Actions ──────────────────────────────────────────
+
+    function startGame() {
+      send(`/app/game/${roomId()}/start`, { playerId: pid() });
+      log('Sent ▶ START GAME', 'green');
+    }
+
+    function chooseWord() {
+      const word = wordChoices[0] || 'cat';
+      send(`/app/game/${roomId()}/word-chosen`, { playerId: pid(), word });
+      log(`Sent 📝 WORD CHOSEN → "${word}"`, 'green');
+    }
+
+    function sendGuess() {
+      const message = document.getElementById('guessInput').value.trim();
+      if (!message) return;
+      send(`/app/chat/${roomId()}`, { playerId: pid(), message });
+      log(`Sent 💬 GUESS → "${message}"`, 'yellow');
+    }
+
+    function sendDraw() {
+      const event = {
+        type: 'PATH',
+        x0: parseFloat(Math.random().toFixed(3)),
+        y0: parseFloat(Math.random().toFixed(3)),
+        x1: parseFloat(Math.random().toFixed(3)),
+        y1: parseFloat(Math.random().toFixed(3)),
+        color: '#E74C3C',
+        brushSize: 5
+      };
+      send(`/app/draw/${roomId()}`, event);
+      log('Sent 🖌 DRAW EVENT', 'blue');
+    }
+
+    function clearCanvas() {
+      send(`/app/draw/${roomId()}/clear`, { playerId: pid() });
+      log('Sent 🗑 CLEAR CANVAS', 'blue');
+    }
+
+    // ── Helpers ───────────────────────────────────────────────
+
+    function send(destination, body) {
+      if (!stompClient || !stompClient.connected) {
+        log('❌ Not connected! Click Connect first.', 'red');
+        return;
+      }
+      stompClient.send(destination, {}, JSON.stringify(body));
+    }
+
+    function roomId() { return document.getElementById('roomId').value.trim(); }
+    function pid()    { return document.getElementById('playerId').value.trim(); }
+</script>
+</body>
+</html>
