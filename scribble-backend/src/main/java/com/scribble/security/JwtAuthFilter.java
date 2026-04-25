@@ -33,6 +33,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String username = jwtService.extractUsername(token);
             String userId = jwtService.extractUserId(token);
             String role = jwtService.extractRole(token);
+            if (!StringUtils.hasText(role)) {
+                role = "GUEST";
+            }
 
             // Create authentication object and put in Security context
             // This is what makes @AuthenticationPrincipal work in controllers
@@ -60,6 +63,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
-        return path.startsWith("/api/auth/") || path.startsWith("/ws");
+        return path.startsWith("/api/auth/")
+                || path.startsWith("/ws");
     }
 }
