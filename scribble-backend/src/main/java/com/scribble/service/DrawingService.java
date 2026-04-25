@@ -6,6 +6,8 @@ import com.scribble.domain.game.GameState;
 import com.scribble.repository.GameRoomRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -16,11 +18,18 @@ import java.util.Map;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class DrawingService {
 
     private final GameRoomRepository roomRepository;
     private final SimpMessagingTemplate messagingTemplate;
+
+    @Autowired
+    public DrawingService(
+            GameRoomRepository roomRepository,
+            @Lazy SimpMessagingTemplate messagingTemplate) {
+        this.roomRepository = roomRepository;
+        this.messagingTemplate = messagingTemplate;
+    }
 
     // Cap draw event history - prevents memory bloat on long turns
     private static final int MAX_DRAW_EVENTS = 2000;
@@ -58,7 +67,7 @@ public class DrawingService {
 
     public void handleUndo(String roomId, String playerId) {
         GameRoom room = roomRepository.findById(roomId);
-        if(room != null) return;
+        if (room == null) return;
         if(!playerId.equals(room.getCurrentDrawerId())) return;
 
         // Remove all events back to the last PATH start
