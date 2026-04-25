@@ -36,8 +36,8 @@ public class WebSocketEventListener {
             // This is critical for sendToUser() to work
             roomService.updatePlayerSession(roomId, playerId, accessor.getSessionId());
 
-            // Send canvas replay if joining mid-game
-            drawingService.replayCanvasForPlayer(roomId, playerId);
+            // Send canvas replay if joining mid-game (STOMP user routing uses WebSocket session id)
+            drawingService.replayCanvasForPlayer(roomId, accessor.getSessionId());
 
             log.info("WS connect — player: {} room: {} session: {}",
                     playerId, roomId, accessor.getSessionId());
