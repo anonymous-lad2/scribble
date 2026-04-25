@@ -1,6 +1,8 @@
 package com.scribble.config;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -8,29 +10,33 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 
 @Configuration
 @EnableWebSocketMessageBroker
+@RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    private final StompConnectAuthChannelInterceptor stompConnectAuthChannelInterceptor;
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry
-                .addEndpoint("/ws")           // clients connect to ws://localhost:8080/ws
-                .setAllowedOriginPatterns("*")       // allow all origins in dev — lock down in prod
-                .withSockJS();                       // fallback for browsers that don't support raw WS
+                .addEndpoint("/ws")
+                .setAllowedOrigins(
+                        "http://localhost:5173",
+                        "http://localhost:3000",
+                        "http://127.0.0.1:5173",
+                        "http://127.0.0.1:3000"
+                )
+                .withSockJS();
+    }
+
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        registration.interceptors(stompConnectAuthChannelInterceptor);
     }
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
-        // Prefix for messages FROM client TO a @MessageMapping method
-        // e.g. client sends to "/app/draw" → hits @MessageMapping("/draw")
         registry.setApplicationDestinationPrefixes("/app");
-
-        // Prefix for messages the broker pushes TO subscribed clients
-        // /topic  → broadcast to everyone in a room
-        // /queue  → private message to one player
         registry.enableSimpleBroker("/topic", "/queue");
-
-        // Prefix for user-specific private messages
-        // Spring converts /user/{sessionId}/queue/word → /queue/word for that session
         registry.setUserDestinationPrefix("/user");
     }
 }
