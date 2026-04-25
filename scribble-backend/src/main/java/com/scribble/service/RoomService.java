@@ -9,20 +9,32 @@ import com.scribble.dto.RoomResponse;
 import com.scribble.repository.GameRoomRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.http.HttpStatus;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.security.SecureRandom;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class RoomService {
 
     private final GameRoomRepository roomRepository;
     private final SimpMessagingTemplate messagingTemplate;
+
+    @Autowired
+    public RoomService(
+            GameRoomRepository roomRepository,
+            @Lazy SimpMessagingTemplate messagingTemplate) {
+        this.roomRepository = roomRepository;
+        this.messagingTemplate = messagingTemplate;
+    }
 
     // Characters used for room code — no 0/O/I/1 to avoid confusion
     private static final String ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -31,12 +43,16 @@ public class RoomService {
 
     // ── Create ────────────────────────────────────────────────
 
-    public RoomResponse createRoom(CreateRoomRequest request) {
+    public RoomResponse createRoom(CreateRoomRequest request, String authUserId, String tokenUsername) {
+        if (!Objects.equals(request.getUsername(), tokenUsername)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Room username must match the authenticated user");
+        }
         String roomId = generateUniqueRoomCode();
         String playerId = UUID.randomUUID().toString();
 
         Player host = Player.builder()
                 .playerId(playerId)
+                .authUserId(authUserId)
                 .username(request.getUsername())
                 .avatarColor(request.getAvatarColor())
                 .isHost(true)
@@ -64,7 +80,10 @@ public class RoomService {
 
     // ── Join ──────────────────────────────────────────────────
 
-    public RoomResponse joinRoom(JoinRoomRequest request) {
+    public RoomResponse joinRoom(JoinRoomRequest request, String authUserId, String tokenUsername) {
+        if (!Objects.equals(request.getUsername(), tokenUsername)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Room username must match the authenticated user");
+        }
         GameRoom room = getExistingRoom(request.getRoomId());
 
         if (room.isFull()) {
@@ -78,6 +97,7 @@ public class RoomService {
 
         Player player = Player.builder()
                 .playerId(playerId)
+                .authUserId(authUserId)
                 .username(request.getUsername())
                 .avatarColor(request.getAvatarColor())
                 .isHost(false)
@@ -100,7 +120,8 @@ public class RoomService {
 
     // ── Leave ─────────────────────────────────────────────────
 
-    public void leaveRoom(String roomId, String playerId) {
+    public void leaveRoom(String roomId, String playerId, String authUserId) {
+        assertPlayerBelongsToAccount(roomId, playerId, authUserId);
         GameRoom room = getExistingRoom(roomId);
         Player leaving = room.getPlayer(playerId);
 
@@ -198,6 +219,21 @@ public class RoomService {
             throw new IllegalArgumentException("Room not found: " + roomId);
         }
         return room;
+    }
+
+    /** Ensures the given game playerId was created under the same JWT user as {@code authUserId}. */
+    public void assertPlayerBelongsToAccount(String roomId, String playerId, String authUserId) {
+        if (authUserId == null || authUserId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not authenticated");
+        }
+        GameRoom room = getExistingRoom(roomId);
+        Player p = room.getPlayer(playerId);
+        if (p == null) {
+            throw new IllegalArgumentException("Player not in room");
+        }
+        if (p.getAuthUserId() == null || !p.getAuthUserId().equals(authUserId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not allowed for this player");
+        }
     }
 
     private void transferHost(GameRoom room) {

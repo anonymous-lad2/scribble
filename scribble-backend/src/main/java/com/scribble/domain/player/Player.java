@@ -16,6 +16,8 @@ import java.io.Serializable;
 public class Player implements Serializable {
 
     private String playerId;        // UUID, assigned on join
+    /** User/guest id from JWT at create/join; used to authorize HTTP and STOMP actions. */
+    private String authUserId;
     private String username;
     private String avatarColor;     // hex color e.g -> "#FF5773
     private String sessionId;       // WebSocket session ID - used to route private message
